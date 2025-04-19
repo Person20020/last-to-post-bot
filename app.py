@@ -1,11 +1,25 @@
 import datetime
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, url_for
-import time
 import os
+import schedule
 from slack_sdk import WebClient
 from slackeventsapi import SlackEventAdapter
 import sqlite3
+import time
+import threading
+
+
+"""
+.env file variables
+SLACK_BOT_TOKEN=
+SLACK_SIGNING_SECRET=
+TEST_CHANNEL_ID=
+CHANNEL_ID=
+DATABASE_PATH=
+BOT_ID=
+"""
+
 
 
 load_dotenv()
@@ -41,9 +55,12 @@ def handle_message(event_data):
     text = message['text']
     global last_person_id
     global last_time
-    print(f"Received message: {text} from channel: {channel_id} by user: {user_id}")
+    print(f"\n\033[31mReceived message: {text} from channel: {channel_id} by user: {user_id}\033[0m")
 
     if channel_id == posting_channel_id and user_id != bot_id:
+        if slack_client.users_info(user=user_id)['user']['is_bot']:
+            print("Ignoring bot message.")
+            return
         if user_id != last_person_id:
             slack_client.chat_postMessage(
                 channel=posting_channel_id,
@@ -66,42 +83,94 @@ def handle_message(event_data):
                 db.close()
             last_person_id = user_id
             last_time = time.time()
-            print("\n\n")
     return 
 
 
 
 def send_leaderboard():
+    print("Retrieving leaderboard data...")
+
     try:
         db = sqlite3.connect(db_path)
         cursor = db.cursor()
     except Exception as e:
         print(f"Error connecting to the database: {e}")
         exit(1)
-
-    cursor.execute("SELECT * FROM time_as_last WHERE date = ? ORDER BY time DESC;", (f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}",))
-    rows = cursor.fetchall()
-    db.close()
-    
     
     yesterday = datetime.date.today() - datetime.timedelta(days=1)
+    year = yesterday.year
     month = yesterday.month
     day = yesterday.day
-    leaderboard = f"The daily leaderboard has reset! Here is the rankings for the most total time with the last post for {month}/{day}:\n"
+
+    cursor.execute("SELECT * FROM time_as_last WHERE date = ? ORDER BY time DESC;", (f"{year}-{month}-{day}",))
+    rows = cursor.fetchall()
+    db.close()
+    print("Fetched leaderboard data from database.")
+
+    if len(rows) == 0:
+        print("No data to send.")
+        slack_client.chat_postMessage(
+            channel=posting_channel_id,
+            text="What? No one has posted in the last 24 hours? I guess I won't bother sending a leaderboard then."
+        )
+        return
+    
+
+    leaderboard = f"The daily leaderboard has reset! Here is the rankings for the most total time with the last post for {month}-{day}-{year}:\n"
     
     for row in rows:
         user_id = row[1]
+        try:
+            username = slack_client.users_info(user=user_id)['user']['profile']['display_name']
+        except Exception as e:
+            print(f"Error fetching user info: {e}")
+            username = "Unknown User"
         time = row[2]
-        leaderboard += f"`<@{user_id}>`: {round(time)} seconds\n"
+        round_time = round(time)
+        seconds = round_time % 60
+        total_minutes = round_time // 60
+        minutes = total_minutes % 60
+        hours = round_time // 3600
+        if time < 1 and time != 0:
+            leaderboard += f"`@{username}`:    Less than 1 second\n"
+        elif round_time < 60:
+            leaderboard += f"`@{username}`:    {round_time} seconds\n"
+        elif round_time < 3600:
+            converted_time = f"0:{minutes:02}:{seconds:02}"
+            leaderboard += f"`@{username}`:    {converted_time}\n"
+        else:
+            converted_time = f"{hours}:{minutes:02}:{seconds:02}"
+            leaderboard += f"`@{username}`:    {converted_time}\n"
     
-    leaderboard += "\n\nAs of now everyone's time has been set back to 0 seconds.\n\n"
+    leaderboard += "\n\nAs of now, it is a new day and everyone's time is starting from 0 seconds.\n\n"
 
+    print("Sending leaderboard...")
     slack_client.chat_postMessage(
         channel=posting_channel_id,
         text=leaderboard
     )
+    print("Leaderboard sent.")
+
+
+
+def run_schedules():
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(1)
+        except KeyboardInterrupt as e:
+            print("Exiting...")
+            exit(0)
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(1)
 
 
 
 if __name__ == '__main__':
+    if not os.environ.get("WERKZEUG_RUN_MAIN"):
+        schedule.every().minute.at(":00").do(send_leaderboard)
+        schedule_thread = threading.Thread(target=run_schedules, daemon=True)
+        schedule_thread.start()
     app.run(debug=True, host='127.0.0.1', port=2002)
+    
