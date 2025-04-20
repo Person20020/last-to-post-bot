@@ -10,6 +10,11 @@ import time
 import threading
 
 
+# Set the mode for testing
+test_mode = False
+test_channel_mode = True
+test_date_mode = True
+
 # Add time zones using pytz
 
 
@@ -35,11 +40,9 @@ db_path = os.getenv('DATABASE_PATH')
 bot_id = os.getenv('BOT_ID')
 
 
-# Set the mode for testing
-test_mode = True
 
 # Channel to use
-if test_mode:
+if test_channel_mode:
     posting_channel_id = test_channel
 else:
     posting_channel_id = last_to_post_channel_id
@@ -49,6 +52,16 @@ app = Flask(__name__)
 slack_client = WebClient(token=bot_token)
 slack_event_adapter = SlackEventAdapter(signing_secret, '/slack/events', app)
 
+
+try:
+    db = sqlite3.connect(db_path)
+    cursor = db.cursor()
+    cursor.execute('UPDATE shared_data SET last_user_id = ?, last_time = ? WHERE id = 1;', (None, time.time()))
+    db.commit()
+    db.close()
+except Exception as e:
+    print(f"Error connecting to the database: {e}")
+    exit(1)
 
 last_person_id = None
 last_time = time.time()
@@ -63,8 +76,20 @@ def handle_message(event_data):
     channel_id = message['channel']
     user_id = message['user']
     text = message['text']
-    global last_person_id
-    global last_time
+
+    # Get shared data from the database
+    try:
+        db = sqlite3.connect(db_path)
+        cursor = db.cursor()
+        cursor.execute('SELECT last_user_id, last_time FROM shared_data WHERE id = 1;')
+        shared_data = cursor.fetchone()
+        db.close()
+        last_person_id = shared_data[0]
+        last_time = shared_data[1]
+    except Exception as e:
+        print(f"Error connecting to the database: {e}")
+        exit(1)
+    
     if test_mode:
         print(f"\n\033[31mReceived message: {text} from channel: {channel_id} by user: {user_id}\033[0m")
 
@@ -83,26 +108,47 @@ def handle_message(event_data):
             try:
                 db = sqlite3.connect(db_path)
                 cursor = db.cursor()
+                
+                if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}")).fetchone():
+                    cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}", time.time() - last_time))
+                else:
+                    cursor.execute("UPDATE time_as_last SET time = time + ? WHERE user_id = ? AND date = ?;", (time.time() - last_time, last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}"))
+                db.commit()
+                db.close()
             except Exception as e:
                 print(f"Error connecting to the database: {e}")
                 exit(1)
 
-            if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}")).fetchone():
-                cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}", time.time() - last_time))
-            else:
-                cursor.execute("UPDATE time_as_last SET time = time + ? WHERE user_id = ? AND date = ?;", (time.time() - last_time, last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}"))
-            db.commit()
-            db.close()
         last_person_id = user_id
         last_time = time.time()
+        try:
+            db = sqlite3.connect(db_path)
+            cursor = db.cursor()
+            cursor.execute('UPDATE shared_data SET last_user_id = ?, last_time = ? WHERE id = 1;', (last_person_id, last_time))
+            db.commit()
+            db.close()
+        except Exception as e:
+            print(f"Error connecting to the database: {e}")
+            exit(1)
     return 
 
 
 
 def send_leaderboard():
     print("Logging current person's time...")
-    global last_person_id
-    global last_time
+    
+    try:
+        db = sqlite3.connect(db_path)
+        cursor = db.cursor()
+        cursor.execute('SELECT last_user_id, last_time FROM shared_data WHERE id = 1;')
+        shared_data = cursor.fetchone()
+        db.close()
+        last_person_id = shared_data[0]
+        last_time = shared_data[1]
+    except Exception as e:
+        print(f"Error connecting to the database: {e}")
+        exit(1)
+
 
     print("Last person ID: ", last_person_id)
     print("Duration since last post: ", round((time.time() - last_time), 2), "\n")
@@ -119,17 +165,35 @@ def send_leaderboard():
         try:
             db = sqlite3.connect(db_path)
             cursor = db.cursor()
+            if test_date_mode:
+                today = datetime.date.today()
+                if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{today.year}-{today.month}-{today.day}")).fetchone():
+                    cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{today.year}-{today.month}-{today.day}", time.time() - last_time))
+                else:
+                    cursor.execute("UPDATE time_as_last SET time = time + ? WHERE user_id = ? AND date = ?;", (time.time() - last_time, last_person_id, f"{today.year}-{today.month}-{today.day}"))
+            else:
+                yesterday = datetime.date.today() - datetime.timedelta(days=1)
+                if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{(yesterday.year)}-{yesterday.month}-{yesterday.day}")).fetchone():
+                    cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{yesterday.year}-{yesterday.month}-{yesterday.day}", time.time() - last_time))
+                else:
+                    cursor.execute("UPDATE time_as_last SET time = time + ? WHERE user_id = ? AND date = ?;", (time.time() - last_time, last_person_id, f"{yesterday.year}-{yesterday.month}-{yesterday.day}"))
+            db.commit()
+            db.close()
         except Exception as e:
             print(f"Error connecting to the database: {e}")
             exit(1)
 
-        if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}")).fetchone():
-            cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}", time.time() - last_time))
-        else:
-            cursor.execute("UPDATE time_as_last SET time = time + ? WHERE user_id = ? AND date = ?;", (time.time() - last_time, last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}"))
-        db.commit()
-        db.close()
+        
         last_time = time.time()
+        try:
+            db = sqlite3.connect(db_path)
+            cursor = db.cursor()
+            cursor.execute('UPDATE shared_data SET last_time = ? WHERE id = 1;', (last_time,))
+            db.commit()
+            db.close()
+        except Exception as e:
+            print(f"Error connecting to the database: {e}")
+            exit(1)
 
     print("Logging complete.")
 
@@ -137,15 +201,9 @@ def send_leaderboard():
 
     print("Retrieving leaderboard data...")
 
-    try:
-        db = sqlite3.connect(db_path)
-        cursor = db.cursor()
-    except Exception as e:
-        print(f"Error connecting to the database: {e}")
-        exit(1)
     
     # If in test mode use today's date so i can test the leaderboard with live changing data
-    if test_mode:
+    if test_date_mode:
         today = datetime.date.today()
         year = today.year
         month = today.month
@@ -156,9 +214,16 @@ def send_leaderboard():
         month = yesterday.month
         day = yesterday.day
 
-    cursor.execute("SELECT * FROM time_as_last WHERE date = ? ORDER BY time DESC;", (f"{year}-{month}-{day}",))
-    rows = cursor.fetchall()
-    db.close()
+    try:
+        db = sqlite3.connect(db_path)
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM time_as_last WHERE date = ? ORDER BY time DESC;", (f"{year}-{month}-{day}",))
+        rows = cursor.fetchall()
+        db.close()
+    except Exception as e:
+        print(f"Error connecting to the database: {e}")
+        exit(1)
+
     print("Fetched leaderboard data from database.")
 
     if len(rows) == 0:
@@ -191,13 +256,6 @@ def send_leaderboard():
             converted_time = f"{hours}:{minutes:02}:{seconds:02}"
             leaderboard += f"{i+1}: `@{username}`:    {converted_time}\n"
         
-        """
-        elif round_time < 60:
-            leaderboard += f"`@{username}`:    {round_time} seconds\n"
-        elif round_time < 3600:
-            converted_time = f"0:{minutes:02}:{seconds:02}"
-            leaderboard += f"`@{username}`:    {converted_time}\n"
-        """
     
     leaderboard += "\n\nAs of now, it is a new day and everyone's time is starting from 0 seconds.\n\n"
 
@@ -227,7 +285,13 @@ def run_schedules():
 if __name__ == '__main__':
     print("Starting app...")
     if not os.environ.get("WERKZEUG_RUN_MAIN"):
-        schedule.every().minute.at(":00").do(send_leaderboard)
+        if test_date_mode:
+            schedule.every().minute.at(":00").do(send_leaderboard)
+        else:
+            schedule.every().day.at("00:00").do(send_leaderboard)
         schedule_thread = threading.Thread(target=run_schedules, daemon=True)
         schedule_thread.start()
-    app.run(debug=True, host='127.0.0.1', port=2002)
+    if test_mode:
+        app.run(debug=True, host='127.0.0.1', port=2002)
+    else:
+        app.run(debug=False, host='127.0.0.1', port=2002)
