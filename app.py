@@ -121,7 +121,7 @@ def handle_message(event_data):
     if test_mode:
         print(f"\n\033[31mReceived message: {text} from channel: {channel_id} by user: {user_id}\033[0m")
 
-    if channel_id == posting_channel_id and user_id != bot_id:
+    if channel_id == posting_channel_id and user_id != bot_id and user_id != "USLACKBOT":
         if slack_client.users_info(user=user_id)['user']['is_bot']:
             print("Ignoring bot message.")
             return
@@ -137,10 +137,12 @@ def handle_message(event_data):
                 db = sqlite3.connect(db_path)
                 cursor = db.cursor()
                 
-                if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}")).fetchone():
-                    cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}", time.time() - last_time))
+                today = datetime.datetime.now(timezone).date()
+                
+                if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{today.year}-{today.month}-{today.day}")).fetchone():
+                    cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{today.year}-{today.month}-{today.day}", time.time() - last_time))
                 else:
-                    cursor.execute("UPDATE time_as_last SET time = time + ? WHERE user_id = ? AND date = ?;", (time.time() - last_time, last_person_id, f"{datetime.date.today().year}-{datetime.date.today().month}-{datetime.date.today().day}"))
+                    cursor.execute("UPDATE time_as_last SET time = time + ? WHERE user_id = ? AND date = ?;", (time.time() - last_time, last_person_id, f"{today.year}-{today.month}-{today.day}"))
                 db.commit()
                 db.close()
             except Exception as e:
@@ -385,6 +387,7 @@ def schedule_checker():
         except Exception as e:
             print(f"Error in scheduler function: {e}")
             time.sleep(1)
+        time.sleep(0.5)
 
 
 
