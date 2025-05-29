@@ -107,35 +107,58 @@ def handle_message(event_data):
         subtype = message['subtype']
         print(f"Message has a subtype: {subtype}")
 
-        user_id = message['previous_message']['user'] if 'previous_message' in message else None
-        if not user_id:
-            print("No user ID found in the message. idk why.")
-            return
+        if subtype == "message_deleted":
+            user_id = message['previous_message']['user'] if 'previous_message' in message else None
+            if not user_id:
+                print("No user ID found in the message. idk why.")
+                return
         
-        contents = message['previous_message']['text'] if 'previous_message' in message else "No contents"
-        print(f"Message contents: {contents}")
+            contents = message['previous_message']['text'] if 'previous_message' in message else "No contents"
+            print(f"Message contents: {contents}")
 
-        sanitized_contents = []
-        char_to_entity = {
-            "<": "&lt;",
-            ">": "&gt;",
-            "&": "&amp;"
-        }
-        for i in contents:
-            if i in ["<", ">", "&"]:
-                sanitized_contents.append(f"{char_to_entity[i]}")
-            else:
-                sanitized_contents.append(i)
-            
-        sanitized_contents = ''.join(sanitized_contents)
-
-
-        response = slack_client.chat_postMessage(
-            channel=posting_channel_id,
-            text=f"<@{user_id}> deleted the following message:\n{sanitized_contents}\n----------------------------------\n\nIf they were the last to post this is still true!"
-        )
-        return
+            sanitized_contents = []
+            char_to_entity = {
+                "<": "&lt;",
+                ">": "&gt;",
+                "&": "&amp;"
+            }
+            for i in contents:
+                if i in ["<", ">", "&"]:
+                    sanitized_contents.append(f"{char_to_entity[i]}")
+                else:
+                    sanitized_contents.append(i)
+                
+            sanitized_contents = ''.join(sanitized_contents)
     
+
+            response = slack_client.chat_postMessage(
+                channel=posting_channel_id,
+                text=f"<@{user_id}> deleted the following message:\n{sanitized_contents}\n----------------------------------\n\nIf they were the last to post this is still true!"
+            )
+            return
+        elif message.get('thread_ts', None) != message.get('ts', None): # Reply to a thread
+            contents = message.get('text', "")
+            print(f"Message contents: {contents}")
+
+            sanitized_contents = []
+            char_to_entity = {
+                "<": "&lt;",
+                ">": "&gt;",
+                "&": "&amp;"
+            }
+            for i in contents:
+                if i in ["<", ">", "&"]:
+                    sanitized_contents.append(f"{char_to_entity[i]}")
+                else:
+                    sanitized_contents.append(i)
+                
+            sanitized_contents = ''.join(sanitized_contents)
+
+            response = slack_client.chat_postMessage(
+                channel=posting_channel_id,
+                text=f"<@{user_id}> just sent the following message in a thread:\n{sanitized_contents}"
+            )
+
     
     if not 'user' in message or not 'text' in message or not 'channel' in message:
         print("Message does not contain user, text, or channel information. Ignoring.")
