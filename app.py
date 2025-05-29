@@ -101,9 +101,51 @@ def home():
 @slack_event_adapter.on('message')
 def handle_message(event_data):
     message = event_data['event']
+    print(f"Received message: {message}")
+    
+    if 'subtype' in message:
+        subtype = message['subtype']
+        print(f"Message has a subtype: {subtype}")
+
+        user_id = message['previous_message']['user'] if 'previous_message' in message else None
+        if not user_id:
+            print("No user ID found in the message. idk why.")
+            return
+        
+        contents = message['previous_message']['text'] if 'previous_message' in message else "No contents"
+        print(f"Message contents: {contents}")
+
+        sanitized_contents = []
+        char_to_entity = {
+            "<": "&lt;",
+            ">": "&gt;",
+            "&": "&amp;"
+        }
+        for i in contents:
+            if i in ["<", ">", "&"]:
+                sanitized_contents.append(f"{char_to_entity[i]}")
+            else:
+                sanitized_contents.append(i)
+            
+        sanitized_contents = ''.join(sanitized_contents)
+
+
+        response = slack_client.chat_postMessage(
+            channel=posting_channel_id,
+            text=f"<@{user_id}> deleted the following message:\n{sanitized_contents}\n----------------------------------\n\nIf they were the last to post this is still true!"
+        )
+        return
+    
+    
+    if not 'user' in message or not 'text' in message or not 'channel' in message:
+        print("Message does not contain user, text, or channel information. Ignoring.")
+        return
+    
     channel_id = message['channel']
     user_id = message['user']
     text = message['text']
+
+    
 
     # Get shared data from the database
     try:
@@ -165,7 +207,7 @@ def handle_message(event_data):
 
 
 
-def log_time():
+def log_time(leaderboard=False):
     print("Logging current person's time...")
     
     try:
@@ -196,7 +238,7 @@ def log_time():
         try:
             db = sqlite3.connect(db_path)
             cursor = db.cursor()
-            if test_date_mode:
+            if not leaderboard:
                 today = datetime.datetime.now(timezone).date()
                 if not cursor.execute("SELECT * FROM time_as_last WHERE user_id = ? AND date = ?;", (last_person_id, f"{today.year}-{today.month}-{today.day}")).fetchone():
                     cursor.execute("INSERT INTO time_as_last (user_id, date, time) VALUES (?, ?, ?);", (last_person_id, f"{today.year}-{today.month}-{today.day}", time.time() - last_time))
@@ -296,7 +338,7 @@ def send_leaderboard():
     print("Logging complete.")
     """
 
-    log_time()
+    log_time(leaderboard=True)
 
     print("Retrieving leaderboard data...")
 
@@ -369,6 +411,7 @@ def send_leaderboard():
 
 
 def schedule_checker():
+    last_log_time = time.time()
     while True:
         try:
             now = datetime.datetime.now(timezone)
@@ -380,6 +423,9 @@ def schedule_checker():
                 if now.hour == 0 and now.minute == 0 and now.second == 0:
                     send_leaderboard()
                     time.sleep(1.1)
+            if last_log_time != int(time.time()):
+                log_time()
+                last_log_time = time.time()
         except KeyboardInterrupt as e:
             print("Exiting...")
             log_time()
